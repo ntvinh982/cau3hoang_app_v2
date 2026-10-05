@@ -402,7 +402,9 @@ function dbSave(next) {
   dbQueue = task.catch(() => {});
   return task;
 }
-const BUILD_TAG = "2026-10-05-bao-mat-v2"; // đổi mỗi lần publish để anh đối chiếu đã tải bản mới hay chưa
+const BUILD_TAG = "2026-10-06-quet-bill-tinh-tien";
+// Tạm ẩn chức năng in bill qua mạng LAN (chưa có máy trung gian ở tiệm). Đổi thành true để bật lại.
+const FEATURE_PRINT_BILL = false; // đổi mỗi lần publish để anh đối chiếu đã tải bản mới hay chưa
 
 /* ==== GIAO DIỆN SÁNG / TỐI ====
    Mọi màu trong app là biến CSS dạng var(--hXXXXXX) (XXXXXX = mã màu SÁNG gốc). Bảng màu sáng/tối
@@ -848,6 +850,7 @@ function App() {
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [editingOrder, setEditingOrder] = useState(null); // order object đang sửa, null = đang tạo mới
+  const [editScan, setEditScan] = useState(null); // dữ liệu bill vừa quét, điền sẵn vào form sửa đơn
   const [askPaymentOrder, setAskPaymentOrder] = useState(null); // order đang chờ chọn phương thức thanh toán khi bấm "→ Hoàn thành" nhanh
   const [showImport, setShowImport] = useState(false);
   const [showNewExpense, setShowNewExpense] = useState(false);
@@ -1797,9 +1800,11 @@ function App() {
       {showNew && <NewOrderModal onClose={() => setShowNew(false)} onSave={addOrder} services={sortedServices} customers={customers} orders={data.orders} />}
       {editingOrder && (
         <NewOrderModal
+          key={editingOrder.id + (editScan ? ":scan" : "")}
           initial={editingOrder}
-          onClose={() => setEditingOrder(null)}
-          onSave={updateOrder}
+          scanned={editScan}
+          onClose={() => { setEditingOrder(null); setEditScan(null); }}
+          onSave={(o) => { updateOrder(o); setEditScan(null); }}
           services={sortedServices}
           customers={customers}
           orders={data.orders}
@@ -1847,8 +1852,9 @@ function App() {
           onClose={() => setDetail(null)}
           onSetStatus={(sid, method) => setStatus(detailOrder.id, sid, method)}
           onDelete={() => deleteOrder(detailOrder.id)}
-          onEdit={() => { setDetail(null); setEditingOrder(detailOrder); }}
-          onPrint={() => setBillOrder(detailOrder)}
+          onEdit={() => { setDetail(null); setEditScan(null); setEditingOrder(detailOrder); }}
+          onScanned={canScanBill() ? (f) => { setDetail(null); setEditScan(f); setEditingOrder(detailOrder); } : null}
+          onPrint={FEATURE_PRINT_BILL ? () => setBillOrder(detailOrder) : null}
           onSetPriority={(level) => setOrderPriority(detailOrder.id, level)}
           services={sortedServices}
           canDelete={can(currentUser, "order.delete")}
@@ -2278,6 +2284,28 @@ function billToForm(bill, services) {
   };
 }
 
+// Quét bill đã tính tiền trên POS365 -> dữ liệu để cập nhật vào đơn có sẵn
+const canScanBill = () => hasAuth() && typeof C3H_AUTH.ocrBill === "function";
+async function scanBillToForm(file, services) {
+  const b64 = await fileToJpegBase64(file);
+  const bill = await C3H_AUTH.ocrBill(
+    b64, "image/jpeg",
+    services.map((s) => ({ id: s.id, label: s.label, unit: s.unit, unitPrice: s.unitPrice || 0 }))
+  );
+  if (bill.isBill === false) throw new Error("Ảnh này không giống hoá đơn — hãy chụp lại cả tờ bill");
+  const f = billToForm(bill, services);
+  if (!f.items.length) throw new Error("Không thấy dòng dịch vụ nào trên bill — hãy chụp lại rõ hơn");
+  return f;
+}
+// Bill có đúng là của khách trong đơn này không (so SĐT, không có SĐT thì so tên)
+function billCustomerMismatch(f, order) {
+  if (!f || !order) return false;
+  const op = String(order.phone || "").replace(/\D/g, "");
+  if (f.phone && op) return f.phone !== op;
+  if (f.name && order.customerName) return normalizeStr(f.name).replace(/\s+/g, " ").trim() !== normalizeStr(order.customerName).replace(/\s+/g, " ").trim();
+  return false;
+}
+
 /* ================= NEW ORDER ================= */
 // Dịch vụ mặc định khi tạo đơn mới: ưu tiên "Quần Áo" đơn giá 8.000đ/kg
 // (loại phổ biến nhất), nếu không tìm thấy thì rơi về dịch vụ đầu danh sách.
@@ -2292,19 +2320,21 @@ function findDefaultService(services) {
   return services[0]?.id;
 }
 
-function NewOrderModal({ onClose, onSave, services, customers, initial, orders }) {
+function NewOrderModal({ onClose, onSave, services, customers, initial, orders, scanned }) {
   const isEdit = !!initial;
   const [name, setName] = useState(initial?.customerName || "");
-  const [phone, setPhone] = useState(initial?.phone || "");
+  const [phone, setPhone] = useState(initial?.phone || (scanned && scanned.phone) || "");
   const [note, setNote] = useState(initial?.note || "");
   const [priority, setPriority] = useState(initial?.priority || "thuong");
-  const [posRef, setPosRef] = useState(initial?.posRef || "");
-  const [scan, setScan] = useState(null); // null | { busy } | { error } | { info }
+  const [posRef, setPosRef] = useState((scanned && scanned.posRef) || initial?.posRef || "");
+  const [scan, setScan] = useState(scanned ? { info: scanned } : null); // null | { busy } | { error } | { info }
   const scanInputRef = React.useRef(null);
   const [status, setStatus] = useState(initial?.status || "tiepnhan");
   const [paymentMethod, setPaymentMethod] = useState(initial?.paymentMethod || "tienmat");
   const [items, setItems] = useState(
-    initial?.items?.length
+    scanned && scanned.items && scanned.items.length
+      ? scanned.items
+      : initial?.items?.length
       ? initial.items.map((it) => {
           // Chỉ đánh dấu "giá sửa tay" nếu giá đang lưu KHÁC với giá tự tính theo
           // công thức hiện tại (nghĩa là trước đó người dùng đã chỉnh tay thật sự).
@@ -2348,20 +2378,10 @@ function NewOrderModal({ onClose, onSave, services, customers, initial, orders }
     if (!file) return;
     setScan({ busy: true });
     try {
-      const b64 = await fileToJpegBase64(file);
-      const bill = await C3H_AUTH.ocrBill(
-        b64, "image/jpeg",
-        services.map((s) => ({ id: s.id, label: s.label, unit: s.unit, unitPrice: s.unitPrice || 0 }))
-      );
-      if (bill.isBill === false) throw new Error("Ảnh này không giống hoá đơn — hãy chụp lại cả tờ bill");
-      const f = billToForm(bill, services);
-      if (!f.items.length && !f.name && !f.phone) throw new Error("Không thấy dòng dịch vụ nào trên bill — hãy chụp lại rõ hơn");
-      // Khách: khớp theo SĐT với khách đã có để dùng đúng tên/ghi chú của app
-      const known = f.phone ? customers.find((c) => (c.phone || "").replace(/\D/g, "") === f.phone) : null;
-      const nm = f.name || (known ? known.name : "");
-      if (nm) { setName(nm); setPickedKey(null); setShowSuggest(false); }
-      if (f.phone) setPhone(f.phone);
-      if (f.items.length) setItems(f.items);
+      const f = await scanBillToForm(file, services);
+      // Đơn đã có: giữ tên khách của đơn; chỉ điền SĐT nếu đơn chưa có. Dịch vụ/số kg lấy theo bill đã tính tiền.
+      if (f.phone && !phone.trim()) setPhone(f.phone);
+      setItems(f.items);
       if (f.posRef) setPosRef(f.posRef);
       setScan({ info: f });
     } catch (err) {
@@ -2390,7 +2410,7 @@ function NewOrderModal({ onClose, onSave, services, customers, initial, orders }
 
   return (
     <Modal title={isEdit ? `Sửa đơn ${initial.code}` : "Tạo đơn mới"} onClose={onClose}>
-      {!isEdit && hasAuth() && typeof C3H_AUTH.ocrBill === "function" && (
+      {isEdit && canScanBill() && (
         <div style={{ marginBottom: 12 }}>
           <input ref={scanInputRef} type="file" accept="image/*" onChange={handleScanFile} style={{ display: "none" }} />
           <button
@@ -2403,7 +2423,7 @@ function NewOrderModal({ onClose, onSave, services, customers, initial, orders }
               fontWeight: 800, fontSize: 15, cursor: "pointer", opacity: scan && scan.busy ? 0.7 : 1,
             }}
           >
-            {scan && scan.busy ? "⏳ Đang đọc bill… (vài giây)" : "📷 Chụp bill POS365 — AI điền sẵn đơn"}
+            {scan && scan.busy ? "⏳ Đang đọc bill… (vài giây)" : (scan && scan.info ? "📷 Quét lại bill tính tiền" : "📷 Quét bill tính tiền (POS365)")}
           </button>
           {scan && scan.error && (
             <div style={{ fontSize: 12.5, background: "var(--hFDEDE9)", color: "var(--hC0392B)", padding: 10, borderRadius: 10, marginTop: 8, fontWeight: 700 }}>
@@ -2417,8 +2437,13 @@ function NewOrderModal({ onClose, onSave, services, customers, initial, orders }
             return (
               <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ fontSize: 12.5, background: "var(--hF3F8ED)", color: "var(--h5C8A4E)", padding: 10, borderRadius: 10, fontWeight: 700 }}>
-                  ✅ Đã đọc bill{f.posRef ? " " + f.posRef : ""}{f.billTime ? " · " + f.billTime : ""} — kiểm tra lại rồi bấm Lưu
+                  ✅ Đã đọc bill{f.posRef ? " " + f.posRef : ""}{f.billTime ? " · " + f.billTime : ""} — dịch vụ và số kg đã cập nhật theo bill, kiểm tra rồi bấm Lưu thay đổi
                 </div>
+                {billCustomerMismatch(f, { customerName: name, phone }) && (
+                  <div style={{ fontSize: 12.5, background: "var(--hFDEDE9)", color: "var(--hC0392B)", padding: 10, borderRadius: 10, fontWeight: 700 }}>
+                    ⚠️ Bill ghi khách “{f.name || "?"}”{f.phone ? " · " + f.phone : ""}, khác với đơn này (“{name}”{phone ? " · " + phone : ""}). Kiểm tra đúng đơn chưa rồi mới lưu.
+                  </div>
+                )}
                 {f.billTotal > 0 && (
                   <div style={{
                     fontSize: 12.5, padding: 10, borderRadius: 10, fontWeight: 700,
@@ -3021,9 +3046,24 @@ function MapField({ label, value, headers, onChange }) {
 }
 
 /* ================= ORDER DETAIL ================= */
-function OrderDetailModal({ order, onClose, onSetStatus, onDelete, onEdit, onPrint, onSetPriority, services, canDelete }) {
+function OrderDetailModal({ order, onClose, onSetStatus, onDelete, onEdit, onPrint, onScanned, onSetPriority, services, canDelete }) {
   const [confirmDel, setConfirmDel] = useState(false);
   const [askPayment, setAskPayment] = useState(false); // đang chờ chọn phương thức thanh toán trước khi chuyển "Hoàn thành"
+  const [scanState, setScanState] = useState(null); // null | "busy" | { error }
+  const scanRef = React.useRef(null);
+  const onScanFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setScanState("busy");
+    try {
+      const f = await scanBillToForm(file, services);
+      setScanState(null);
+      onScanned(f);
+    } catch (err) {
+      setScanState({ error: String((err && err.message) || err) });
+    }
+  };
   const cur = statusIndex(order.status);
 
   const handleStatusClick = (sid) => {
@@ -3137,9 +3177,29 @@ function OrderDetailModal({ order, onClose, onSetStatus, onDelete, onEdit, onPri
         </div>
       )}
 
+      {onPrint && (
       <button style={{ ...st.primaryBtn, background: "var(--h6B9B5E)" }} onClick={onPrint}>
-        🧾 In bill
-      </button>
+          🧾 In bill
+        </button>
+      )}
+      {onScanned && (
+        <>
+          <input ref={scanRef} type="file" accept="image/*" onChange={onScanFile} style={{ display: "none" }} />
+          <button
+            type="button"
+            disabled={scanState === "busy"}
+            onClick={() => scanRef.current && scanRef.current.click()}
+            style={{ ...st.primaryBtn, background: "var(--hFBEEDF)", color: "var(--h8A5A1C)", border: "2px dashed var(--hD68C45)", opacity: scanState === "busy" ? 0.7 : 1 }}
+          >
+            {scanState === "busy" ? "⏳ Đang đọc bill… (vài giây)" : "📷 Quét bill tính tiền (POS365)"}
+          </button>
+          {scanState && scanState.error && (
+            <div style={{ fontSize: 12.5, background: "var(--hFDEDE9)", color: "var(--hC0392B)", padding: 10, borderRadius: 10, marginTop: 8, fontWeight: 700 }}>
+              ⚠️ {scanState.error}
+            </div>
+          )}
+        </>
+      )}
       <button style={{ ...st.primaryBtn, background: "var(--h4A90C2)" }} onClick={onEdit}>
         ✏️ Sửa đơn hàng
       </button>
