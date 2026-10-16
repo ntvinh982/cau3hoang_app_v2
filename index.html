@@ -402,7 +402,7 @@ function dbSave(next) {
   dbQueue = task.catch(() => {});
   return task;
 }
-const BUILD_TAG = "2026-10-06-dong-bo-3-ngay";
+const BUILD_TAG = "2026-10-11-nut-luu-luon-hien";
 // Tạm ẩn chức năng in bill qua mạng LAN (chưa có máy trung gian ở tiệm). Đổi thành true để bật lại.
 const FEATURE_PRINT_BILL = false; // đổi mỗi lần publish để anh đối chiếu đã tải bản mới hay chưa
 
@@ -730,6 +730,13 @@ function fromLocalDT(v) {
   if (!m) return null;
   const t = new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 12), +(m[5] || 0)).getTime();
   return isNaN(t) ? null : t;
+}
+// Thứ trong tuần kiểu Việt Nam: CN, T2 … T7 (từ chuỗi YYYY-MM-DD)
+const WEEKDAYS_VN = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+function weekdayVN(ymd) {
+  const [y, m, d] = String(ymd || "").split("-").map(Number);
+  if (!y || !m || !d) return "";
+  return WEEKDAYS_VN[new Date(y, m - 1, d).getDay()];
 }
 function todayStr() {
   return dateStr(Date.now());
@@ -2136,13 +2143,22 @@ function OrdersTab({ filtered, dayOrders, filter, setFilter, search, setSearch, 
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
         <button style={{ ...st.smallBtn, padding: "8px 10px" }} onClick={() => shiftDate(-1)} disabled={showAllDates}>◀</button>
-        <input
-          type="date"
-          style={{ ...st.input, flex: 1, padding: "8px 10px" }}
-          value={viewDate}
-          onChange={(e) => { setViewDate(e.target.value); setShowAllDates(false); }}
-          disabled={showAllDates}
-        />
+        {/* Ô ngày gốc của iPhone không chèn thêm chữ được -> hiện lại dạng "T3, 06/10/2026", ô chọn ngày thật nằm trong suốt phía trên */}
+        <label style={{ position: "relative", flex: 1, minWidth: 0, display: "block" }}>
+          <div style={{ ...st.input, padding: "8px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontWeight: 700, whiteSpace: "nowrap", opacity: showAllDates ? 0.45 : 1 }}>
+            <span style={{ fontWeight: 800, color: weekdayVN(viewDate) === "CN" ? "var(--hC0392B)" : "var(--h4A3B2A)" }}>{weekdayVN(viewDate)},</span>
+            <span>{viewDate.split("-").reverse().join("/")}</span>
+            {isToday && <span style={{ fontSize: 11, fontWeight: 800, color: "var(--h5C8A4E)", background: "var(--hF3F8ED)", borderRadius: 8, padding: "1px 7px" }}>Hôm nay</span>}
+          </div>
+          <input
+            type="date"
+            aria-label={"Chọn ngày, đang xem " + weekdayVN(viewDate) + " " + viewDate.split("-").reverse().join("/")}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, fontSize: 16, border: 0, padding: 0, margin: 0, cursor: showAllDates ? "default" : "pointer" }}
+            value={viewDate}
+            onChange={(e) => { if (e.target.value) { setViewDate(e.target.value); setShowAllDates(false); } }}
+            disabled={showAllDates}
+          />
+        </label>
         <button style={{ ...st.smallBtn, padding: "8px 10px" }} onClick={() => shiftDate(1)} disabled={showAllDates}>▶</button>
         {!isToday && !showAllDates && (
           <button style={{ ...st.smallBtn, padding: "8px 10px" }} onClick={() => setViewDate(todayStr())}>Hôm nay</button>
@@ -2752,8 +2768,10 @@ function NewOrderModal({ onClose, onSave, services, customers, initial, orders, 
         <span style={{ fontWeight: 800, color: "var(--h6B9B5E)", fontSize: 18 }}>{fmtMoney(total)}</span>
       </div>
 
+      {/* Nút lưu luôn dính ở đáy form, không cần kéo xuống cuối mới thấy */}
+      <div style={{ position: "sticky", bottom: -8, zIndex: 2, background: "var(--hFDF8EF)", padding: "6px 0 8px", marginTop: 6, boxShadow: "0 -8px 12px -8px rgba(74,59,42,.25)" }}>
       <button
-        style={{ ...st.primaryBtn, opacity: valid ? 1 : 0.4 }}
+        style={{ ...st.primaryBtn, marginTop: 0, opacity: valid ? 1 : 0.4 }}
         disabled={!valid}
         onClick={() =>
           onSave({
@@ -2778,8 +2796,10 @@ function NewOrderModal({ onClose, onSave, services, customers, initial, orders, 
           })
         }
       >
-        {isEdit ? "Lưu thay đổi" : "Lưu đơn hàng"}
+        {(isEdit ? "Lưu thay đổi" : "Lưu đơn hàng") + (total > 0 ? " · " + fmtMoney(total) : "")}
       </button>
+      {!valid && <div style={{ fontSize: 11.5, color: "var(--hA89F91)", textAlign: "center", marginTop: 4 }}>Nhập tên khách để lưu</div>}
+      </div>
 
       {showCustomerPicker && (
         <CustomerPickerModal
