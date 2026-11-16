@@ -10,15 +10,27 @@ if [ -z "$BASE" ]; then echo "Thiếu địa chỉ app. VD: bash cai-may-in.sh h
 DIR="$HOME/c3h"; mkdir -p "$DIR"
 
 echo; echo "== 1/5 Cài Node.js (lần đầu mất vài phút, cứ để máy chạy) =="
-if ! command -v node >/dev/null 2>&1; then
-  yes | pkg update -y || true
+# Luôn nâng cấp đủ bộ thư viện (tránh lỗi "cannot locate symbol ..." khi Node mới hơn thư viện cũ)
+if ! node -v >/dev/null 2>&1; then
+  yes | pkg upgrade -y || true
   pkg install -y nodejs || { echo "❌ Cài Node.js lỗi. Kiểm tra mạng rồi chạy lại."; exit 1; }
 fi
+if ! node -v >/dev/null 2>&1; then
+  echo "Node.js chưa chạy được, nâng cấp thêm thư viện..."; yes | pkg upgrade -y || true
+fi
+node -v >/dev/null 2>&1 || { echo "❌ Node.js vẫn lỗi. Chụp màn hình gửi Claude."; exit 1; }
 echo "✅ Node.js $(node -v)"
 
 echo; echo "== 2/5 Tải chương trình in =="
 if ! curl -fsSL "$BASE/c3h-print-agent.js?v=$(date +%s)" -o "$DIR/c3h-print-agent.js"; then
   echo "❌ Không tải được $BASE/c3h-print-agent.js — kiểm tra đã up file lên GitHub chưa."; exit 1
+fi
+if head -c 20 "$DIR/c3h-print-agent.js" | grep -q "rtf"; then
+  echo "❌ File c3h-print-agent.js trên GitHub bị đổi sang dạng văn bản RTF (do mở/lưu bằng TextEdit)."
+  echo "   Upload lại đúng file gốc (không mở ra sửa) rồi chạy lại lệnh cài."; exit 1
+fi
+if ! node --check "$DIR/c3h-print-agent.js" 2>/dev/null; then
+  echo "❌ File c3h-print-agent.js bị hỏng. Upload lại đúng file gốc rồi chạy lại lệnh cài."; exit 1
 fi
 echo "✅ Đã tải"
 
